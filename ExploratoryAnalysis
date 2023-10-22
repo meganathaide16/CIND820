@@ -1,0 +1,46 @@
+#1. Read in data -----
+library(readr)
+df <- read_csv("Desktop/SeoulBikeData.csv")
+
+#2. Briefly examine the data -----
+# First I will take a look at the types of variables included in the dataset
+str(df)
+# Taking a look at the output of the str function, I can see that there are a few changes to make to edit the datatypes to make it easier to work with.
+# i. Date should be changed from character to date data type 
+# ii. The seasons, holiday and functioning day variables should be changed to factor data type
+df$Date <- as.Date(df$Date,"%d/%m/%Y")
+df$Seasons <- as.factor(df$Seasons)
+df$Holiday <- as.factor(df$Holiday)
+df$`Functioning Day` <- as.factor(df$`Functioning Day`)
+#let's take a look at the data types now
+str(df)
+summary(df)
+# Lets look at the correlations of the variables, I will exclude the categorical variables for this
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+corr_matrix <- cor(df[, sapply(df, is.numeric)])
+corrplot(corr_matrix, method = "color", addCoef.col = "black")
+# There is a moderate positive correlation between the temperature and the rented bike count
+# A weak negative correlation between snowfall and rented bike count 
+
+#Rented bike count and temperature
+ggplot( df, aes(x = `Temperature(°C)`, y = `Rented Bike Count`)) +
+geom_col() +
+  labs(title = "Rented Bike Amount ",
+       x = "Temperature",
+       y = "Rented Bike Count")
+
+#Amount of bikes being rented based on season
+ggplot(df, aes(x = `Seasons`, y = `Rented Bike Count`)) +
+  geom_boxplot() +
+  labs(title = "Rented Bike Amount Over Time",
+       x = "Season",
+       y = "Rented Bike Count") 
+
+#histogram of bike count 
+ggplot(df, aes(x = `Rented Bike Count`)) +
+  geom_histogram(binwidth = 100) +
+  labs(title = "Distribution of Rented Bike Count",
+       x = "Rented Bike Count",
+       y = "Frequency") 
