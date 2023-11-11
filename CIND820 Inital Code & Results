@@ -1,0 +1,260 @@
+---
+title: "CIND820 Inital Code & Results"
+author: "MeganAthaide"
+date: "2023-11-10"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Loading in packages 
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+library(tidyverse)
+library(scales)
+library(rpart)
+library(purrr)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+```
+
+## Introduction
+
+This project uses data from the the UC Irvine Machine Learning Repository which can be found here:
+<https://archive.ics.uci.edu/dataset/560/seoul+bike+sharing+demand>
+The link to my github repository with the inital code and results can be found here: <https://github.com/meganathaide16/CIND820>.
+ 
+Outlined below are the structure of the code and initial results:
+1. Exploratory data visualizations and cross tabulations
+2. Simple Linear regression
+3. Multiple Linear regression 
+4. Application of solutions to the research questions 
+5. Experimenting with classification
+
+
+## Descriptive Analytics
+
+In this section, I will address my first research question, *What are the bike riding patterns of bike share users?* through the use of data visualizations and cross tabulations to find patterns in the data that describe the conditions in which bike share users use or do not use bikes in. 
+
+In the code block below I am reading in the data set, preparing it, and using the `summary` and `str` functions to gain an overall understanding of the data set I am working with. 
+
+```{r }
+# Reading in the data set
+df <- read_csv("Desktop/SeoulBikeData.csv")
+
+# Ensuring the variables are the correct types
+df$Date <- as.Date(df$Date,"%d/%m/%Y")
+df$Seasons <- as.factor(df$Seasons)
+df$Holiday <- as.factor(df$Holiday)
+df$`Functioning Day` <- as.factor(df$`Functioning Day`)
+
+# Understanding the data set 
+summary(df)
+str(df)
+```
+
+Based on the output of the summary function, here are some takeaways about the dataset:
+- This data is based on bike share use in Seoul, South Korea of from the December 1st 2017 until November 30th 2018.
+- The most amount of bikes rented at a given hour in the aforementioned time period is 3556 bicycles. 
+- The lowest temperature recorded was -17.80°C while the highest was 39.40°C. 
+- The majority of days recorded are functioning days of the bike share. 
+
+The data set is predominantly composed of numerical variables, most being weather conditions. The variables that are categorical variables are the following: Season, Holiday, Functioning Day 
+
+
+```{r }
+#Looking at bike rental amount depending on time and season 
+
+# Histogram -- Amount of bikes being rented based on season
+ggplot(df, aes(x = `Seasons`, y = `Rented Bike Count`)) +
+  geom_boxplot() +
+  labs(title = "Rented Bike Amount Across Seasons",
+       x = "Season",
+       y = "Rented Bike Count") 
+
+# Line Plot -- Bike Rental over time 
+
+ggplot(df, aes(x = Date, y = `Rented Bike Count`, color= Seasons)) +
+  geom_col() +
+  labs(title = "Bike Rental Trend Over Time") +
+  scale_x_date(labels = date_format("%b %Y"), date_breaks = "1 month") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+# Making tables with the average bike rentals by season 
+# Below I am grouping the data by month then calculate the average rentals per month
+avg_seasonal_rentals <- df %>%
+  group_by(Seasons) %>%
+  summarise(AvgRentals = round(mean(`Rented Bike Count`)))
+print(avg_seasonal_rentals)
+
+
+corr_matrix <- cor(df[, sapply(df, is.numeric)])
+corrplot(corr_matrix, method = "color")
+
+```
+
+The graphs and tables above demonstrate the following patterns of bike share use: 
+- There is a moderate positive correlation between the temperature and the rented bike count and there is a weak negative correlation between snowfall and rented bike count. 
+- More bike rentals take place in the summer than any other season. 
+- Highest bike rental amount is recorded in mid-June. 
+
+
+
+In the following code I use the mutate, cut, and case_when functions to create categorical variables in a second data frame of the numerical variables from the original Seoul Bike Share Data. I chose these categories based on the ranges of the data I produced ealrlier from the summary function.
+```{r}
+
+# Selecting in the categorical variables to the second data set 
+
+df2 <- df %>%
+  select(Date, `Rented Bike Count`, Hour, `Functioning Day`, Holiday, Seasons) 
+
+# Creating categorical variables from the original data set using the numerical variables 
+
+df2 <- mutate(df2, humidity_cats = cut(df$`Humidity(%)`, breaks = c(0, 30, 60, 100), labels = c("Low", "Medium", "High"))) 
+
+df2 <- mutate(df2, temp_cats = cut(df$`Temperature(°C)`, c(-Inf, 10, 20, Inf), labels = c("Cold", "Moderate", "Hot")))
+
+df2 <- mutate(df2, windspeed_cats = cut(df$`Wind speed (m/s)`, breaks = c(-Inf, 1, 3, 5, 7.5), labels = c("No Wind", "Light Breeze", "Moderate Wind", "Strong Wind")))
+
+df2 <- mutate(df2, visibility_cats = cut(df$`Visibility (10m)`, breaks = c(-Inf, 100, 500, 2000, Inf), labels = c("Low", "Moderate", "High", "Very High"))) 
+
+df2 <- df2 %>%
+  mutate(dewpoint_cats = case_when(
+    df$`Dew point temperature(°C)` <= -10 ~ "Very Low",
+    df$`Dew point temperature(°C)` > -10 & df$`Dew point temperature(°C)` <= 0 ~ "Low",
+    df$`Dew point temperature(°C)` > 0 & df$`Dew point temperature(°C)` <= 10 ~ "Moderate",
+    df$`Dew point temperature(°C)` > 10 & df$`Dew point temperature(°C)` <= 20 ~ "High",
+    df$`Dew point temperature(°C)` > 20 & df$`Dew point temperature(°C)` <= 27 ~ "Very High"
+  ))
+
+df2 <- df2 %>%
+  mutate(windspeed_cats = case_when(
+    df$`Wind speed (m/s)` == 0 ~ "No Wind",
+    df$`Wind speed (m/s)` > 0 & df$`Wind speed (m/s)` <= 1 ~ "Light Breeze",
+    df$`Wind speed (m/s)` > 1 & df$`Wind speed (m/s)` <= 3 ~ "Moderate Wind",
+    df$`Wind speed (m/s)` > 3 & df$`Wind speed (m/s)` <= 7.5 ~ "Strong Wind"
+  ))
+
+df2 <- df2 %>%
+  mutate(solarradiation_cats = case_when(
+    df$`Solar Radiation (MJ/m2)` <= 1 ~ "Low",
+    df$`Solar Radiation (MJ/m2)` > 1 & df$`Solar Radiation (MJ/m2)` <= 2 ~ "Moderate",
+    df$`Solar Radiation (MJ/m2)` > 2 & df$`Solar Radiation (MJ/m2)` <= 3.5 ~ "High"))
+
+df2 <- df2 %>%
+  mutate(rainfall_cats = case_when(
+    df$`Rainfall(mm)` <= 5 ~ "Light",
+    df$`Rainfall(mm)` > 5 & df$`Rainfall(mm)` <= 10 ~ "Moderate",
+    df$`Rainfall(mm)` > 10 & df$`Rainfall(mm)` <= 20 ~ "Heavy",
+    df$`Rainfall(mm)` > 20 & df$`Rainfall(mm)` <= 35 ~ "Very Heavy"))
+
+
+df2 <- mutate(df2, snowfall_cats = cut(df$`Snowfall (cm)`, breaks = c(-Inf, 2, 4, 6, 8.8, Inf), labels = c("Very Low", "Low", "Moderate", "High", "Very High")))
+
+
+```
+
+
+The following are plots made with the second data frame that contains the categorical variables. 
+These graphs look at the average (mean) bike rental amount based on the specified weather condition. 
+
+```{r}
+
+ggplot(df2, aes(x = solarradiation_cats, y = `Rented Bike Count`)) +
+  geom_bar(stat = "summary", fun = "mean", fill = "skyblue", color = "black") +
+  labs(title = "Average Bike Rental Amount by Solar Radiation",
+       x = "Solar Radiation Categories",
+       y = "Average Bike Rental Amount") +
+  theme_minimal()
+
+ggplot(df2, aes(x = dewpoint_cats, y = `Rented Bike Count`)) +
+  geom_bar(stat = "summary", fun = "mean", fill = "purple", color = "black") +
+  labs(title = "Average Bike Rental Amount by Dew Point Temperature Levels",
+       x = "Dew Point Temperature Levels",
+       y = "Average Bike Rental Amount") +
+  theme_minimal()
+
+
+```
+Fewer bikes are rented when there is low radiation as compared to high or moderate solar radiation. 
+Higher dew point temperatures have higher average bike rentals recorded than lower dewpoint temperatures. 
+
+## Predictive Analytics
+In the code below I am experimenting with linear regressions using the lm function and variables I know have strong relationships with the rented bike amount due to the correlation plot I made in the descriptive analytics section. 
+
+```{r}
+# Simple Linear Regressions 
+
+#linear regression model with humidity 
+model <- lm(`Rented Bike Count` ~ `Humidity(%)`, data = df)
+summary(model)
+plot(df$`Humidity(%)`, df$`Rented Bike Count`)
+abline(model, col = "red")
+
+#linear regression model with solar radiation 
+model2 <- lm(`Rented Bike Count` ~ `Solar Radiation (MJ/m2)`, data = df)
+summary(model2)
+plot(df$`Solar Radiation (MJ/m2)`, df$`Rented Bike Count`)
+abline(model2, col = "blue")
+
+#linear regression model with dewpoint 
+model3 <- lm(`Rented Bike Count` ~ `Dew point temperature(°C)`, data = df)
+summary(model3)
+plot(df$`Dew point temperature(°C)`, df$`Rented Bike Count`)
+abline(model3, col = "yellow")
+
+
+# Multiple Linear Regression 
+model4 <- lm(`Rented Bike Count` ~ `Solar Radiation (MJ/m2)` + `Dew point temperature(°C)` + `Humidity(%)`, data = df)
+summary(model4)
+
+
+#Making a decsion Tree 
+model5 <- rpart(`Rented Bike Count` ~ `Solar Radiation (MJ/m2)` + `Dew point temperature(°C)` + `Humidity(%)`, data = df)
+rpart.plot(model5)
+
+```
+
+In the following code chunk, I will use test and training data sets and cross validation. 
+```{r}
+# set seep for reproducability 
+set.seed(123)
+
+# Splitting the data into training and testing data sets 
+split_index <- sample(c(TRUE, FALSE), nrow(df), replace = TRUE, prob = c(0.8, 0.2))
+train_data <- df[split_index, ]
+test_data <- df[!split_index, ]
+
+#making suring the data sets are split correctly 
+dim(train_data)
+dim(test_data)
+
+# using the random forrest regression algorithm 
+#model <- randomForest(`Rented Bike Count` ~ ., data = train_data)
+
+# Make the predictions using the test data set
+#predictions <- predict(model, newdata = test_data)
+
+#evaluate the model 
+#rmse <- sqrt(mean((predictions - test_data$`Rented Bike Count`)^2))
+#print(paste("Root Mean Squared Error (RMSE):", rmse))
+
+# cross validation/stability check 
+#results <- train(
+#  `Rented Bike Count` ~ .,
+#  data = seoul_data,
+#  method = "rf",
+#  trControl = trainControl(method = "cv", number = 5)
+#)
+
+#print(results)
+
+```
