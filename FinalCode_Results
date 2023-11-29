@@ -1,0 +1,578 @@
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+library(tidyverse)
+library(scales)
+library(rpart)
+library(purrr)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+library(lubridate)
+library(showtext)
+library(viridis)
+library(hrbrthemes)
+
+
+# PREPARING THE DATA SET ----------
+
+# Reading in the data set
+getwd()
+df <- read_csv("/Users/meganathaide/Desktop/SeoulBikeData.csv")
+
+# Ensuring the variables are the correct types
+df$Date <- as.Date(df$Date,"%d/%m/%Y")
+df$Seasons <- as.factor(df$Seasons)
+df$Holiday <- as.factor(df$Holiday)
+df$`Functioning Day` <- as.factor(df$`Functioning Day`)
+
+
+# Making a new variable that that gives us the month of the data from a given row
+
+df <- df %>%
+  mutate(Month = format(Date, "%B")) %>%
+  mutate(Month = tools::toTitleCase(Month)) %>%
+  mutate(Month = factor(Month, levels = month.name, ordered = TRUE))
+
+# Creating categorical variables from the original data set using the numerical variables 
+
+df <- mutate(df, humidity_cats = cut(df$`Humidity(%)`, breaks = c(-Inf, 0, 30, 60, 100), labels = c("No humidity", "Low", "Medium", "High")))
+df$humidity_cats <- as.factor(df$humidity_cats)
+
+df <- mutate(df, temp_cats = cut(df$`Temperature(°C)`, c(-Inf, 10, 20, Inf), labels = c("Cold", "Moderate", "Hot")))
+
+df <- mutate(df, windspeed_cats = cut(df$`Wind speed (m/s)`, breaks = c(-Inf, 1, 3, 5, 7.5), labels = c("No Wind", "Light Breeze", "Moderate Wind", "Strong Wind")))
+df$windspeed_cats <- as.factor(df$windspeed_cats)
+
+df <- mutate(df, visibility_cats = cut(df$`Visibility (10m)`, breaks = c(-Inf, 100, 500, 2000, Inf), labels = c("Low", "Moderate", "High", "Very High"))) 
+
+df <- df %>%
+  mutate(dewpoint_cats = case_when(
+    df$`Dew point temperature(°C)` <= -10 ~ "Very Low",
+    df$`Dew point temperature(°C)` > -10 & df$`Dew point temperature(°C)` <= 0 ~ "Low",
+    df$`Dew point temperature(°C)` > 0 & df$`Dew point temperature(°C)` <= 10 ~ "Moderate",
+    df$`Dew point temperature(°C)` > 10 & df$`Dew point temperature(°C)` <= 20 ~ "High",
+    df$`Dew point temperature(°C)` > 20 & df$`Dew point temperature(°C)` <= 28 ~ "Very High"
+  ))
+df$dewpoint_cats <- as.factor(df$dewpoint_cats)
+
+
+
+df <- df %>%
+  mutate(windspeed_cats = case_when(
+    df$`Wind speed (m/s)` == 0 ~ "No Wind",
+    df$`Wind speed (m/s)` > 0 & df$`Wind speed (m/s)` <= 1 ~ "Light Breeze",
+    df$`Wind speed (m/s)` > 1 & df$`Wind speed (m/s)` <= 3 ~ "Moderate Wind",
+    df$`Wind speed (m/s)` > 3 & df$`Wind speed (m/s)` <= 7.5 ~ "Strong Wind"
+  ))
+df$windspeed_cats <- as.factor(df$windspeed_cats)
+
+
+df <- df %>%
+  mutate(solarradiation_cats = case_when(
+    df$`Solar Radiation (MJ/m2)` <= 1 ~ "Low",
+    df$`Solar Radiation (MJ/m2)` > 1 & df$`Solar Radiation (MJ/m2)` <= 2 ~ "Moderate",
+    df$`Solar Radiation (MJ/m2)` > 2 & df$`Solar Radiation (MJ/m2)` <= 3.7 ~ "High"))
+df$solarradiation_cats <- as.factor(df$solarradiation_cats)
+
+
+df <- df %>%
+  mutate(rainfall_cats = case_when(
+    df$`Rainfall(mm)` <= 5 ~ "Light",
+    df$`Rainfall(mm)` > 5 & df$`Rainfall(mm)` <= 10 ~ "Moderate",
+    df$`Rainfall(mm)` > 10 & df$`Rainfall(mm)` <= 20 ~ "Heavy",
+    df$`Rainfall(mm)` > 20 & df$`Rainfall(mm)` <= 35 ~ "Very Heavy"))
+df$rainfall_cats <- as.factor(df$rainfall_cats)
+
+df <- mutate(df, snowfall_cats = cut(df$`Snowfall (cm)`, breaks = c(-Inf, 2, 4, 6, 8.8, Inf), labels = c("Very Low", "Low", "Moderate", "High", "Very High")))
+
+# Now I will make categories of the bike rental volume
+# Define breaks based on summary statistics
+volume_breaks <- quantile(df$`Rented Bike Count`, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE)
+volume_labels <- c("Low", "Moderate", "High", "Very High")
+
+df <- df %>%
+  mutate(rental_volume_cats = case_when(
+    `Rented Bike Count` <= volume_breaks[2] ~ volume_labels[1],
+    `Rented Bike Count` <= volume_breaks[3] ~ volume_labels[2],
+    `Rented Bike Count` <= volume_breaks[4] ~ volume_labels[3],
+    TRUE ~ volume_labels[4]
+  )) %>%
+  mutate(rental_volume_cats = factor(rental_volume_cats, levels = c("Low", "Moderate", "High", "Very High")))
+
+
+# Make another column for the year
+df <- df %>%
+  mutate(Year = year(Date))
+
+#Making categories of time 
+df <- df %>%
+  mutate(time_cats = case_when(
+    Hour >= 0 & Hour < 6 ~ "night",
+    Hour >= 6 & Hour < 12 ~ "morning",
+    Hour >= 12 & Hour < 17 ~ "noon",
+    Hour >= 17 & Hour < 24 ~ "evening",
+    TRUE ~ NA_character_
+  ))
+
+df$time_cats <- as.factor(df$time_cats)
+
+# Now we will take a check if there are any NA values in the data set 
+sapply(df, function(x) sum(is.na(x) | x == ""))
+# Great news! There are no missing values in the data set. 
+
+
+
+# RESEARCH QUESTION 1: DATA VISUALIZATION + DESCRIPTIVE STATISTICS------
+## What are the bike riding patterns of bike share users?------ 
+
+# Understanding the data set 
+summary(df)
+str(df)
+
+## Initial information of the dataset using density plots -------
+
+ggplot(df, aes(x = `Rented Bike Count`, fill = "Density")) +
+  geom_density(alpha = 0.5, color = "grey") +
+  labs(title = "Density Plot of Rented Bike Count",
+       x = "Rented Bike Count",
+       y = "Density") +
+  theme_minimal()
+
+ggplot(df, aes(x = `Wind speed (m/s)`, fill = "Density")) +
+  geom_density(alpha = 0.5, color = "grey") +
+  labs(title = "Density Plot of Wind speed (m/s)",
+       x = "Wind speed (m/s)",
+       y = "Density") +
+  theme_minimal()
+
+ggplot(df, aes(x = `Temperature(°C)`, fill = "Density")) +
+  geom_density(alpha = 0.5, color = "grey") +
+  labs(title = "Density Plot of Temperature(°C)",
+       x = "Temperature(°C)",
+       y = "Density") +
+  theme_minimal()
+
+ggplot(df, aes(x = `Humidity(%)`, fill = "Density")) +
+  geom_density(alpha = 0.5, color = "grey") +
+  labs(title = "Density Plot of Humidity(%))",
+       x = "Humidity(%)",
+       y = "Density") +
+  theme_minimal()
+
+##Looking at bike rental amount depending on time and season----- 
+
+# Histogram -- Amount of bikes being rented based on season
+ggplot(df, aes(x = `Seasons`, y = `Rented Bike Count`)) +
+  geom_boxplot() +
+  labs(title = "Rented Bike Amount Across Seasons",
+       x = "Season",
+       y = "Rented Bike Count") 
+
+# Line Plot -- Bike Rental over time 
+ggplot(df, aes(x = Date, y = `Rented Bike Count`)) +
+  geom_col() +
+  labs(title = "Bike Rental Trend Over Time") +
+  scale_x_date(labels = date_format("%b %Y"), date_breaks = "1 month") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+# Making tables with the average bike rentals by season 
+# Below I am grouping the data by month then calculate the average rentals per season
+avg_seasonal_rentals <- df %>%
+  group_by(Seasons) %>%
+  summarise(AvgRentals = round(mean(`Rented Bike Count`)))
+print(avg_seasonal_rentals)
+
+ggplot(avg_seasonal_rentals, aes(x = Seasons, y = AvgRentals)) +
+  geom_bar(stat = "identity", fill = "deepskyblue3", color = "grey") +
+  labs(title = "Average Seasonal Rentals",
+       x = "Season",
+       y = "Average Rentals") +
+  theme_minimal() 
+
+# Below I am making a graph to represent the average rentals per month
+avg_monthly_rentals <- df %>%
+  group_by(Month) %>%
+  summarise(AvgRentals = round(mean(`Rented Bike Count`)))
+print(avg_monthly_rentals)
+
+ggplot(avg_monthly_rentals, aes(x = Month, y = AvgRentals)) +
+  geom_bar(stat = "identity", fill = "gold", color = "grey") +
+  labs(title = "Average Monthly Rentals",
+       x = "Month",
+       y = "Average Rentals") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Looking at total rentals per month 
+df$Month <- factor(df$Month, levels = month.name, ordered = TRUE)
+
+total_monthly_rentals <- df %>%
+  group_by(Year, Month) %>%
+  summarise(TotalRentals = sum(`Rented Bike Count`))
+
+# Create a line plot for total rentals per month
+ggplot(total_monthly_rentals, aes(x = Month, y = TotalRentals, group = Year)) +
+  geom_line() +
+  labs(title = "Total Monthly Rentals",
+       x = "Month",
+       y = "Total Rentals",
+       fill = "Year") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+# Total rented bikes throughout the day across seasons
+total_hourly_rentals <- df %>%
+  group_by(Hour, Seasons) %>%
+  summarise(TotalRentals = sum(`Rented Bike Count`))
+
+# Create a line plot for total rentals per hour with different lines for each season
+ggplot(total_hourly_rentals, aes(x = Hour, y = TotalRentals, group = Seasons, color = Seasons)) +
+  geom_line() +
+  labs(title = "Total Hourly Rentals by Season",
+       x = "Hour",
+       y = "Total Rentals",
+       fill = "Season") +
+  theme_minimal() +
+  scale_color_manual(values = c("Spring" = "olivedrab1", "Summer" = "tomato1", "Fall" = "tan4", "Winter" = "steelblue3")) +
+  theme(legend.position = "top") 
+
+
+# Now I will look at time of day and average amount of bike rentals 
+avg_hourly_rentals <- df %>%
+  group_by(Hour) %>%
+  summarise(AvgRentals = round(mean(`Rented Bike Count`)))
+print(avg_hourly_rentals)
+
+ggplot(avg_hourly_rentals, aes(x = Hour, y = AvgRentals)) +
+  geom_bar(stat = "identity", fill = "dodgerblue1", color = "grey") +
+  labs(title = "Average Hourly Rentals",
+       x = "Hour",
+       y = "Average Rentals") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_continuous(breaks = seq(0, 24, by = 1))
+
+avg_time_rentals <- df %>%
+  group_by(time_cats) %>%
+  summarise(AvgRentals = round(mean(`Rented Bike Count`)))
+print(avg_time_rentals)
+
+ggplot(avg_time_rentals, aes(x = time_cats, y = AvgRentals)) +
+  geom_bar(stat = "identity", fill = "steelblue1", color = "grey") +
+  labs(title = "Average Rentals by Time of Day",
+       x = "Time of Day",
+       y = "Average Rentals") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+# Looking at holiday bike rental use 
+holiday_df <- df %>% filter(Holiday == "Holiday")
+
+ggplot(holiday_df, aes(x = Date, y = `Rented Bike Count`)) +
+  geom_col() +
+  labs(title = "Bike Rental Trend on Holidays") +
+  scale_x_date(labels = date_format("%b %Y"), date_breaks = "1 month") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+## Temperature and Rental Volume -------
+
+percentage_data <- df %>%
+  group_by(rental_volume_cats, temp_cats) %>%
+  summarise(Count = n()) %>%
+  group_by(rental_volume_cats) %>%
+  mutate(Percentage = Count / sum(Count))
+
+# Reorder the levels of rental_volume_cats
+percentage_data$rental_volume_cats <- factor(percentage_data$rental_volume_cats, 
+                                             levels = c("Low", "Moderate", "High", "Very High"))
+
+# Stacked Graph 
+ggplot(percentage_data, aes(y = rental_volume_cats, x = Percentage, fill = as.factor(temp_cats))) +
+  geom_col(position = "stack", color = "black") +
+  labs(title = "Rental Volume and Temperature",
+       y = "Rental Volume Categories",
+       x = "Percentage",
+       fill = "Legend") +
+  scale_fill_viridis(discrete = TRUE) +  
+  theme_minimal() +
+  theme(panel.grid = element_blank(), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  geom_text(aes(label = scales::percent(Percentage), 
+                fontface = ifelse(temp_cats == "Cold", "bold", "bold")),
+            position = position_stack(vjust = 0.5),
+            color = ifelse(percentage_data$temp_cats == "Cold", "white", "black"),
+            show.legend = FALSE)
+
+## Humidity and Rental Volume -------
+
+percentage_data1 <- df %>%
+  group_by(rental_volume_cats, humidity_cats) %>%
+  summarise(Count = n()) %>%
+  group_by(rental_volume_cats) %>%
+  mutate(Percentage = Count / sum(Count))
+
+# Reorder the levels of rental_volume_cats
+percentage_data1$rental_volume_cats <- factor(percentage_data$rental_volume_cats, 
+                                             levels = c("Low", "Moderate", "High", "Very High"))
+
+# Stacked Graph 
+ggplot(percentage_data1, aes(y = rental_volume_cats, x = Percentage, fill = as.factor(humidity_cats))) +
+  geom_col(position = "stack", color = "black") +
+  labs(title = "Rental Volume and Humidity Levels",
+       y = "Rental Volume Categories",
+       x = "Percentage",
+       fill = "Legend") +
+  scale_fill_viridis(discrete = TRUE) +  
+  theme_minimal() +
+  theme(panel.grid = element_blank(), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  geom_text(aes(label = ifelse(Percentage < 0.07, "", scales::percent(Percentage)), 
+                fontface = ifelse(humidity_cats == "No humidity", "bold", "bold")),
+            position = position_stack(vjust = 0.5),
+            color = ifelse(percentage_data1$humidity_cats == "No humidity", "white", "black"),
+            show.legend = FALSE)
+
+
+## Wind Speed and Rental Volume -------
+
+percentage_data2 <- df %>%
+  group_by(rental_volume_cats, windspeed_cats) %>%
+  summarise(Count = n()) %>%
+  group_by(rental_volume_cats) %>%
+  mutate(Percentage = Count / sum(Count))
+
+# Reorder the levels of rental_volume_cats 
+percentage_data2$rental_volume_cats <- factor(percentage_data2$rental_volume_cats, 
+                                              levels = c("Low", "Moderate", "High", "Very High"))
+
+# Stacked Graph 
+ggplot(percentage_data2, aes(y = rental_volume_cats, x = Percentage, fill = as.factor(windspeed_cats))) +
+  geom_col(position = "stack", color = "black") +
+  labs(title = "Rental Volume and Windspeed",
+       y = "Rental Volume Categories",
+       x = "Percentage",
+       fill = "Legend") +
+  scale_fill_viridis(discrete = TRUE) +  
+  theme_minimal() +
+  theme(panel.grid = element_blank(), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  geom_text(aes(label = ifelse(Percentage < 0.07, "", scales::percent(Percentage)), 
+                fontface = ifelse(windspeed_cats == "No Wind", "bold", "bold")),
+            position = position_stack(vjust = 0.5),
+            color = ifelse(percentage_data2$windspeed_cats == "No Wind", "white", "black"),
+            show.legend = FALSE)
+
+
+## Dew Point and Rental Volume -------
+
+percentage_data3 <- df %>%
+  group_by(rental_volume_cats, dewpoint_cats) %>%
+  summarise(Count = n()) %>%
+  group_by(rental_volume_cats) %>%
+  mutate(Percentage = Count / sum(Count))
+
+# Reorder the levels of rental_volume_cats and dewpoint_cats
+percentage_data3$rental_volume_cats <- factor(percentage_data3$rental_volume_cats, 
+                                              levels = c("Low", "Moderate", "High", "Very High"))
+
+percentage_data3$dewpoint_cats <- factor(percentage_data3$dewpoint_cats, 
+                                              levels = c("Very Low", "Low", "Moderate", "High", "Very High"))
+
+# Stacked Graph 
+ggplot(percentage_data3, aes(y = rental_volume_cats, x = Percentage, fill = as.factor(dewpoint_cats))) +
+  geom_col(position = "stack", color = "black") +
+  labs(title = "Rental Volume and Dew Point Temperature",
+       y = "Rental Volume Categories",
+       x = "Percentage",
+       fill = "Legend") +
+  scale_fill_viridis(discrete = TRUE) +  
+  theme_minimal() +
+  theme(panel.grid = element_blank(), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  geom_text(aes(label = ifelse(Percentage < 0.07, "", scales::percent(Percentage)), 
+                fontface = ifelse(dewpoint_cats == "Very Low", "bold", "bold")),
+            position = position_stack(vjust = 0.5),
+            color = ifelse(percentage_data3$dewpoint_cats == "Very Low", "white", "black"),
+            show.legend = FALSE)
+
+## Temperature and Rental Volume -------
+
+percentage_data3 <- df %>%
+  group_by(rental_volume_cats, temp_cats) %>%
+  summarise(Count = n()) %>%
+  group_by(rental_volume_cats) %>%
+  mutate(Percentage = Count / sum(Count))
+
+# Reorder the levels of rental_volume_cats and temp_cats
+percentage_data3$rental_volume_cats <- factor(percentage_data3$rental_volume_cats, 
+                                              levels = c("Low", "Moderate", "High", "Very High"))
+
+percentage_data3$temp_cats <- factor(percentage_data3$temp_cats, 
+                                         levels = c("Cold", "Moderate", "Hot"))
+
+# Stacked Graph 
+ggplot(percentage_data3, aes(y = rental_volume_cats, x = Percentage, fill = as.factor(temp_cats))) +
+  geom_col(position = "stack", color = "black") +
+  labs(title = "Rental Volume and Temperature",
+       y = "Rental Volume Categories",
+       x = "Percentage",
+       fill = "Legend") +
+  scale_fill_viridis(discrete = TRUE) +  
+  theme_minimal() +
+  theme(panel.grid = element_blank(), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  geom_text(aes(label = ifelse(Percentage < 0.07, "", scales::percent(Percentage)), 
+                fontface = ifelse(temp_cats == "Cold", "bold", "bold")),
+            position = position_stack(vjust = 0.5),
+            color = ifelse(percentage_data3$temp_cats == "Cold", "white", "black"),
+            show.legend = FALSE)
+
+
+# a correlation plot between the temperature and bike rental amount
+ggplot(df, aes(x = `Temperature(°C)`, y = `Rented Bike Count`)) +
+  geom_point() +
+  labs(title = "Correlation Between Temperature and Rented Bike Count",
+       x = "Temperature(°C)",
+       y = "Rented Bike Count") +
+  theme_minimal()
+
+
+## Solar Radiation and Rental Volume -------
+
+percentage_data3 <- df %>%
+  group_by(rental_volume_cats, solarradiation_cats) %>%
+  summarise(Count = n()) %>%
+  group_by(rental_volume_cats) %>%
+  mutate(Percentage = Count / sum(Count))
+
+# Reorder the levels of rental_volume_cats and solarradiation_cats
+percentage_data3$rental_volume_cats <- factor(percentage_data3$rental_volume_cats, 
+                                              levels = c("Low", "Moderate", "High", "Very High"))
+
+percentage_data3$solarradiation_cats <- factor(percentage_data3$solarradiation_cats, 
+                                     levels = c("High", "Moderate", "Low"))
+
+# Stacked Graph 
+ggplot(percentage_data3, aes(y = rental_volume_cats, x = Percentage, fill = as.factor(solarradiation_cats))) +
+  geom_col(position = "stack", color = "black") +
+  labs(title = "Rental Volume and Solar Radiation",
+       y = "Rental Volume Categories",
+       x = "Percentage",
+       fill = "Legend") +
+  scale_fill_viridis(discrete = TRUE) +  
+  theme_minimal() +
+  theme(panel.grid = element_blank(), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  geom_text(aes(label = ifelse(Percentage < 0.07, "", 
+                               scales::percent(Percentage)), 
+                fontface = ifelse(solarradiation_cats == 
+                                    "High", "bold", "bold")),
+            position = position_stack(vjust = 0.5),
+            color = ifelse(percentage_data3$solarradiation_cats == 
+                             "High", "white", "black"),
+            show.legend = FALSE)
+
+
+# looking at the correlations within the data set 
+corr_matrix <- cor(df[, sapply(df, is.numeric)])
+corrplot(corr_matrix, method = "color")
+
+
+## Solar Radiation and Rental Volume -------
+
+percentage_data3 <- df %>%
+  group_by(rental_volume_cats, time_cats) %>%
+  summarise(Count = n()) %>%
+  group_by(rental_volume_cats) %>%
+  mutate(Percentage = Count / sum(Count))
+
+# Reorder the levels of rental_volume_cats and time_cats
+percentage_data3$rental_volume_cats <- factor(percentage_data3$rental_volume_cats, 
+                                              levels = c("Low", "Moderate", "High", "Very High"))
+
+percentage_data3$time_cats <- factor(percentage_data3$time_cats, 
+                                               levels = c("morning", "noon", "evening","night"))
+
+# Stacked Graph 
+ggplot(percentage_data3, aes(y = rental_volume_cats, x = Percentage, fill = as.factor(time_cats))) +
+  geom_col(position = "stack", color = "black") +
+  labs(title = "Rental Volume and Time of Day",
+       y = "Rental Volume Categories",
+       x = "Percentage",
+       fill = "Legend") +
+  scale_fill_viridis(discrete = TRUE) +  
+  theme_minimal() +
+  theme(panel.grid = element_blank(), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank()) +
+  geom_text(aes(label = ifelse(Percentage < 0.07, "", 
+                               scales::percent(Percentage)), 
+                fontface = ifelse(time_cats == 
+                                    "morning", "bold", "bold")),
+            position = position_stack(vjust = 0.5),
+            color = ifelse(percentage_data3$time_cats == 
+                             "morning", "white", "black"),
+            show.legend = FALSE)
+
+
+# looking at the correlations within the data set 
+corr_matrix <- cor(df[, sapply(df, is.numeric)])
+corrplot(corr_matrix, method = "color")
+
+
+
+# Simple Linear Regressions -------
+
+#linear regression model with humidity 
+model <- lm(`Rented Bike Count` ~ `Humidity(%)`, data = df)
+summary(model)
+plot(df$`Humidity(%)`, df$`Rented Bike Count`)
+abline(model, col = "red")
+
+#linear regression model with solar radiation 
+model2 <- lm(`Rented Bike Count` ~ `Solar Radiation (MJ/m2)`, data = df)
+summary(model2)
+plot(df$`Solar Radiation (MJ/m2)`, df$`Rented Bike Count`)
+abline(model2, col = "blue")
+
+#linear regression model with dewpoint 
+model3 <- lm(`Rented Bike Count` ~ `Dew point temperature(°C)`, data = df)
+summary(model3)
+plot(df$`Dew point temperature(°C)`, df$`Rented Bike Count`)
+abline(model3, col = "yellow")
+
+#Making a decsion Tree -------
+model5 <- rpart(`Rented Bike Count` ~ `Solar Radiation (MJ/m2)` + `Dew point temperature(°C)` + `Humidity(%)`, data = df)
+rpart.plot(model5)
+
+# Linear Regression Model -------
+set.seed(123)  
+train_index <- createDataPartition(df$`Rented Bike Count`, p = 0.7, list = FALSE)
+train_data <- df[train_index, ]
+test_data <- df[-train_index, ]
+model <- lm(`Rented Bike Count` ~ `Dew point temperature(°C)`, data = train_data)
+model
+predictions <- predict(model, newdata = test_data)
+predictions
+mae <- mean(abs(predictions - test_data$`Rented Bike Count`))
+print(paste("Mean Absolute Error: ", mae))
+
+# Multiple Linear Regression Model 
+set.seed(123)
+train_index2 <- createDataPartition(df$`Rented Bike Count`, p = 0.7, list = FALSE)
+train_data2 <- df[train_index2, ]
+test_data2 <- df[-train_index2, ]
+model2 <- lm(`Rented Bike Count` ~ `Dew point temperature(°C)` + `Temperature(°C)` + `Humidity(%)`, data = train_data2)
+model2
+predictions <- predict(model2, newdata = test_data2)
+mae <- mean(abs(predictions - test_data2$`Rented Bike Count`))
+print(paste("Mean Absolute Error: ", mae))
+
